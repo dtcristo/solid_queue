@@ -1,6 +1,60 @@
 module JobsTestHelper
   private
 
+  # Claims and performs what's ready, the way a worker does, in this thread.
+  def perform_ready_jobs
+    process = SolidQueue::Process.find_by(name: "test-worker") || SolidQueue::Process.register(kind: "Worker", pid: 42, name: "test-worker")
+
+    SolidQueue::ReadyExecution.claim("*", 100, process.id).each(&:perform)
+  end
+
+  # Calls the block in the middle of each job's run, after it has started.
+  def perform_ready_jobs_with_callback(&block)
+    results = []
+    callback = ->(*) { results << block.call }
+
+    ActiveSupport::Notifications.subscribed(callback, "perform_start.active_job") { perform_ready_jobs }
+    results
+  end
+
+  # The name is in both places, and a rename in a deploy leaves both unresolvable.
+  def rename_job_class(job, name)
+    job.update!(class_name: name, arguments: job.arguments.merge("job_class" => name))
+  end
+
+  def stop_coalescing(job_class)
+    job_class.coalesce_key = nil
+  end
+
+  # What has to hold whenever nothing is in the middle of a transaction: a key's job
+  # is marked, live and hasn't started.
+  def assert_coalesce_invariants
+    SolidQueue::CoalesceKey.find_each do |coalesce_key|
+      job = coalesce_key.job
+
+      assert job, "#{coalesce_key.key} has no job"
+      assert job.arguments.key?("solid_queue_coalesce_on_conflict"), "#{coalesce_key.key} is held by an unmarked job"
+      assert_not job.finished?, "#{coalesce_key.key} is held by a finished job"
+      assert_nil job.claimed_execution, "#{coalesce_key.key} is held by a job that started"
+      assert_nil job.failed_execution, "#{coalesce_key.key} is held by a failed job"
+    end
+  end
+
+  # Raises what a deadlock raises each time the database runs a matching statement,
+  # after it ran. Returns how many times it did.
+  def deadlocking_on(statement, &block)
+    deadlocks = 0
+    callback = ->(*, payload) do
+      if payload[:sql].match?(statement)
+        deadlocks += 1
+        raise ActiveRecord::Deadlocked, "boom"
+      end
+    end
+
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record", &block)
+    deadlocks
+  end
+
   def wait_for_jobs_to_finish_for(timeout = 1.second, except: [])
     wait_while_with_timeout(timeout) do
       skip_active_record_query_cache do

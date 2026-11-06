@@ -12,6 +12,29 @@ class LogSubscriberTest < ActiveSupport::TestCase
     SolidQueue.logger = logger
   end
 
+  test "coalesce a call" do
+    attach_log_subscriber
+    instrument "coalesce.solid_queue", key: "MyJob/1", job_id: 42, active_job_id: "abc", class_name: "MyJob", status: :discarded
+
+    assert_match_logged :debug, "Coalesce call", "job_id: 42, active_job_id: \"abc\", class_name: \"MyJob\", outcome: :discarded"
+  end
+
+  test "a coalesce line leaves out the key, which the app defines" do
+    attach_log_subscriber
+    instrument "coalesce.solid_queue", key: "MyJob/secret", job_id: 42, active_job_id: "abc", class_name: "MyJob", status: :created
+
+    assert_no_match(/secret/, @logger.logged(:debug).join)
+  end
+
+  test "a coalesce line isn't built above debug" do
+    subscriber = SolidQueue::LogSubscriber.new
+    SolidQueue::LogSubscriber.attach_to :solid_queue, subscriber
+    @logger.level = Logger::INFO
+
+    assert subscriber.silenced?("coalesce.solid_queue")
+    assert_not subscriber.silenced?("release_many_claimed.solid_queue")
+  end
+
   test "unblock one job" do
     attach_log_subscriber
     instrument "release_blocked.solid_queue", job_id: 42, concurrency_key: "foo/1", released: true

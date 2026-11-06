@@ -47,6 +47,7 @@ class ActiveSupport::TestCase
   include ConfigurationTestHelper, ProcessesTestHelper, JobsTestHelper
 
   def destroy_records
+    SolidQueue::CoalesceKey.delete_all if SolidQueue::CoalesceKey.migrated?
     SolidQueue::Job.destroy_all
     SolidQueue::Process.destroy_all
     SolidQueue::Semaphore.delete_all

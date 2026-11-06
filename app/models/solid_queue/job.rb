@@ -13,7 +13,7 @@ module SolidQueue
       end
     end
 
-    include Executable, Clearable, Recurrable, Batchable
+    include Executable, Clearable, Recurrable, Batchable, Coalescible
 
     serialize :arguments, coder: JSON
 
@@ -26,27 +26,36 @@ module SolidQueue
           job.scheduled_at ||= Time.current
           job.batch_id = current_batch_id || job.batch_id
         end
-        active_jobs_by_job_id = active_jobs.index_by(&:job_id)
 
-        transaction do
-          jobs = create_all_from_active_jobs(active_jobs)
-          prepare_all_for_execution(jobs).tap do |enqueued_jobs|
-            enqueued_jobs.each do |enqueued_job|
-              active_jobs_by_job_id[enqueued_job.active_job_id].provider_job_id = enqueued_job.id
-              active_jobs_by_job_id[enqueued_job.active_job_id].successfully_enqueued = true
+        coalesced_jobs, active_jobs_to_create = active_jobs.partition(&:coalesced_enqueue?)
+        coalesced_calls = prepare_all_coalesced(coalesced_jobs)
+        active_jobs_by_job_id = active_jobs_to_create.index_by(&:job_id)
+
+        if active_jobs_to_create.any?
+          transaction do
+            jobs = create_all_from_active_jobs(active_jobs_to_create)
+            prepare_all_for_execution(jobs).tap do |enqueued_jobs|
+              enqueued_jobs.each do |enqueued_job|
+                active_jobs_by_job_id[enqueued_job.active_job_id].provider_job_id = enqueued_job.id
+                active_jobs_by_job_id[enqueued_job.active_job_id].successfully_enqueued = true
+              end
             end
           end
         end
+
+        enqueue_all_coalesced(coalesced_calls)
 
         active_jobs.count(&:successfully_enqueued?)
       end
 
       def enqueue(active_job, scheduled_at: Time.current)
         active_job.scheduled_at = scheduled_at
+        return enqueue_coalesced(active_job) if active_job.coalesced_enqueue?
 
         create_from_active_job(active_job).tap do |enqueued_job|
           active_job.provider_job_id = enqueued_job.id if enqueued_job.persisted?
           active_job.successfully_enqueued = enqueued_job.persisted?
+          ensure_coalesced_retry_enqueued(active_job, enqueued_job)
         end
       end
 

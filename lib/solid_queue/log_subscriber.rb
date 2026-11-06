@@ -50,6 +50,13 @@ class SolidQueue::LogSubscriber < ActiveSupport::LogSubscriber
     debug formatted_event(event, action: "Sweep stalled batches", **event.payload.slice(:stale_executions, :finished_batches, :started_batches))
   end
 
+  # This one fires for every call, so above debug it shouldn't build a line for each
+  subscribe_log_level :coalesce, :debug
+
+  def coalesce(event)
+    debug formatted_event(event, action: "Coalesce call", **event.payload.slice(:job_id, :active_job_id, :class_name), outcome: event.payload[:status])
+  end
+
   def batch_progress_error(event)
     error formatted_event(event, action: "Error updating batch progress", **event.payload.slice(:batch_id, :job_id), error: formatted_error(event.payload[:error]))
   end

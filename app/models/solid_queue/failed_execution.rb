@@ -7,6 +7,9 @@ module SolidQueue
     serialize :error, coder: JSON
 
     before_save :expand_error_details_from_exception, if: :exception
+    # Before the insert, so the key is locked first, as in admission, and a failure
+    # that rolls back keeps it on the job
+    before_create -> { job.release_coalesce_key }
 
     attr_accessor :exception
 
