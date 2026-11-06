@@ -34,6 +34,14 @@ class SolidQueue::CoalesceSimpleTest < ActiveSupport::TestCase
     end
   end
 
+  class CollectingRefreshJob < ApplicationJob
+    coalesce key: ->(name) { name }, on_conflict: :collect
+
+    def perform_calls(calls)
+      JobBuffer.add(calls.size)
+    end
+  end
+
   class OrdinaryFailingJob < ApplicationJob
     def perform
       raise ExpectedTestError
@@ -547,6 +555,32 @@ class SolidQueue::CoalesceSimpleTest < ActiveSupport::TestCase
     end
 
     assert_includes [ [ "FOR SHARE" ], [ "LOCK IN SHARE MODE" ] ], key_locks.call { 2.times { CoalescedRefreshJob.perform_later("a") } }
+  end
+
+  test "a collecting admission locks the key exclusively" do
+    skip "Row locks don't exist on SQLite" if SolidQueue::Record.connection_pool.db_config.adapter == "sqlite3"
+
+    queries = capture_key_queries { 2.times { CollectingRefreshJob.perform_later("a") } }
+
+    assert_equal [ "FOR UPDATE" ], queries.filter_map { |sql| sql[/FOR UPDATE|FOR SHARE|LOCK IN SHARE MODE/] }.uniq
+  end
+
+  test "a collecting admission for a held key locks it without trying to insert it" do
+    CollectingRefreshJob.perform_later("a")
+
+    queries = capture_key_queries { CollectingRefreshJob.perform_later("a") }
+
+    assert_empty queries.grep(/\AINSERT/), queries.to_s
+  end
+
+  test "a collecting admission for a new key on MySQL inserts it without a locking read first" do
+    skip "Gap locks only exist on InnoDB" unless SolidQueue::Record.connection_pool.db_config.adapter.match?(/mysql|trilogy/)
+
+    queries = capture_key_queries { CollectingRefreshJob.perform_later("a") }
+    insert = queries.index { |sql| sql.start_with?("INSERT") }
+
+    assert insert, queries.to_s
+    assert_empty queries.first(insert).grep(/FOR UPDATE/), queries.to_s
   end
 
   test "a deferred call reaches the queue when the app's transaction commits" do

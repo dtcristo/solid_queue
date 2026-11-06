@@ -1,0 +1,3 @@
+collecting_task:
+  class: SolidQueue::CoalesceValidationTest::CollectingRecurringJob
+  schedule: every hour

@@ -26,6 +26,21 @@ class LogSubscriberTest < ActiveSupport::TestCase
     assert_no_match(/secret/, @logger.logged(:debug).join)
   end
 
+  test "skip a coalesced call" do
+    attach_log_subscriber
+    instrument "drop_coalesced_call.solid_queue", call_id: 7, job_id: 42, active_job_id: "abc", class_name: "MyJob", exception_class: "ActiveJob::DeserializationError"
+
+    assert_match_logged :warn, "Skip coalesced call for a deleted record", "call_id: 7, job_id: 42, active_job_id: \"abc\", class_name: \"MyJob\", exception_class: \"ActiveJob::DeserializationError\""
+  end
+
+  test "no coalescing event logs arguments or payloads, whatever it's given" do
+    attach_log_subscriber
+    instrument "coalesce.solid_queue", key: "MyJob/1", job_id: 42, active_job_id: "abc", class_name: "MyJob", status: :created, arguments: [ "secret" ], job_data: { "arguments" => [ "secret" ] }
+    instrument "drop_coalesced_call.solid_queue", call_id: 7, job_id: 42, active_job_id: "abc", exception_class: "E", arguments: [ "secret" ]
+
+    assert_no_match(/secret/, (@logger.logged(:debug) + @logger.logged(:warn)).join)
+  end
+
   test "a coalesce line isn't built above debug" do
     subscriber = SolidQueue::LogSubscriber.new
     SolidQueue::LogSubscriber.attach_to :solid_queue, subscriber
@@ -33,6 +48,14 @@ class LogSubscriberTest < ActiveSupport::TestCase
 
     assert subscriber.silenced?("coalesce.solid_queue")
     assert_not subscriber.silenced?("release_many_claimed.solid_queue")
+  end
+
+  test "a skipped call's line is built above debug" do
+    subscriber = SolidQueue::LogSubscriber.new
+    SolidQueue::LogSubscriber.attach_to :solid_queue, subscriber
+    @logger.level = Logger::INFO
+
+    assert_not subscriber.silenced?("drop_coalesced_call.solid_queue")
   end
 
   test "unblock one job" do

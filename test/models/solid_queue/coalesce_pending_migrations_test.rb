@@ -29,6 +29,24 @@ class SolidQueue::CoalescePendingMigrationsTest < ActiveSupport::TestCase
     assert_equal 0, SolidQueue::Job.count
   end
 
+  test "enqueueing a collecting job raises the same error, single or bulk" do
+    assert_raises(SolidQueue::CoalesceKey::PendingMigrations) { CollectedCallsJob.perform_later("g", 1) }
+    assert_raises(SolidQueue::CoalesceKey::PendingMigrations) { SolidQueue::Job.enqueue_all([ CollectedCallsJob.new("g", 1) ]) }
+    assert_equal 0, SolidQueue::Job.count
+  end
+
+  test "a keys table without the calls table still counts as pending" do
+    SolidQueue::Record.connection_pool.with_connection do |connection|
+      connection.create_table(:solid_queue_coalesce_keys) { |t| t.string :key, null: false }
+    end
+    SolidQueue::CoalesceKey.instance_variable_set(:@migrated, nil)
+
+    assert_not SolidQueue::CoalesceKey.migrated?
+    assert_raises(SolidQueue::CoalesceKey::PendingMigrations) { CoalescedRefreshJob.perform_later("a") }
+  ensure
+    SolidQueue::Record.connection_pool.with_connection { |connection| connection.drop_table(:solid_queue_coalesce_keys, if_exists: true) }
+  end
+
   test "normal jobs enqueue, run, fail and retry as before" do
     active_job = AddToBufferJob.perform_later("hey")
     ActiveJob.perform_all_later([ AddToBufferJob.new("ho") ])
@@ -45,6 +63,12 @@ class SolidQueue::CoalescePendingMigrationsTest < ActiveSupport::TestCase
     CoalescedRefreshJob.perform_now("a")
 
     assert_equal [ "a" ], JobBuffer.values
+  end
+
+  test "perform_now of a collecting job doesn't need the tables" do
+    CollectedCallsJob.perform_now("g", 1)
+
+    assert_equal [ [ [ "g", 1 ] ] ], JobBuffer.values
   end
 
   private

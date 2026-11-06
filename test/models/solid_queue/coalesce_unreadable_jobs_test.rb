@@ -7,6 +7,12 @@ require "test_helper"
 class SolidQueue::CoalesceUnreadableJobsTest < ActiveSupport::TestCase
   self.use_transactional_tests = false
 
+  class CollectingJob < ApplicationJob
+    coalesce key: "unreadable", on_conflict: :collect
+
+    def perform_calls(_calls); end
+  end
+
   class DiscardingJob < ApplicationJob
     coalesce key: "unreadable"
 
@@ -51,13 +57,14 @@ class SolidQueue::CoalesceUnreadableJobsTest < ActiveSupport::TestCase
       assert_discards(job)
     end
 
-    [ DiscardingJob ].each do |job_class|
+    [ CollectingJob, DiscardingJob ].each do |job_class|
       test "a #{job_class.name.demodulize} with #{description} for a payload fails and gives up its key" do
         job = enqueue(job_class)
         corrupt(job, payload)
 
         assert_fails_and_stops_being_claimed(job)
         assert_equal 0, SolidQueue::CoalesceKey.count
+        assert_equal CollectingJob == job_class ? 1 : 0, SolidQueue::CoalescedCall.where(job_id: job.id).count
       end
 
       test "a #{job_class.name.demodulize} with #{description} for a payload gets discarded with its key" do
@@ -66,6 +73,7 @@ class SolidQueue::CoalesceUnreadableJobsTest < ActiveSupport::TestCase
 
         assert_discards(job)
         assert_equal 0, SolidQueue::CoalesceKey.count
+        assert_equal 0, SolidQueue::CoalescedCall.count
       end
     end
   end
@@ -85,7 +93,7 @@ class SolidQueue::CoalesceUnreadableJobsTest < ActiveSupport::TestCase
       assert_discards(SolidQueue::Job.find(job.id))
     end
 
-    [ DiscardingJob ].each do |job_class|
+    [ CollectingJob, DiscardingJob ].each do |job_class|
       test "a #{job_class.name.demodulize} whose class is in a file that won't load, #{class_name}, fails and gives up its key" do
         job = enqueue(job_class)
         rename_job_class(job, class_name)
@@ -104,7 +112,7 @@ class SolidQueue::CoalesceUnreadableJobsTest < ActiveSupport::TestCase
     end
   end
 
-  [ DiscardingJob ].each do |job_class|
+  [ CollectingJob, DiscardingJob ].each do |job_class|
     test "a #{job_class.name.demodulize} whose class is gone fails and gives up its key" do
       job = enqueue(job_class)
       rename_job_class(job, "RemovedJob")
@@ -119,6 +127,7 @@ class SolidQueue::CoalesceUnreadableJobsTest < ActiveSupport::TestCase
 
       assert_discards(SolidQueue::Job.find(job.id))
       assert_equal 0, SolidQueue::CoalesceKey.count
+      assert_equal 0, SolidQueue::CoalescedCall.count
     end
   end
 
