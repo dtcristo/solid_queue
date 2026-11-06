@@ -29,6 +29,7 @@ Solid Queue can be used with SQL databases such as MySQL, PostgreSQL, or SQLite,
 - [Concurrency controls](#concurrency-controls)
   - [Performance considerations](#performance-considerations)
 - [Coalescing](#coalescing)
+  - [Collecting calls](#collecting-calls)
 - [Failed jobs and retries](#failed-jobs-and-retries)
   - [Error reporting on jobs](#error-reporting-on-jobs)
   - [Jobs interrupted by non-graceful process death](#jobs-interrupted-by-non-graceful-process-death)
@@ -682,7 +683,32 @@ end
 
 If Solid Queue has its own database, a call inside your app's transaction can be discarded into a job that a worker starts before you commit, and that job misses your change. To avoid this, set `self.enqueue_after_transaction_commit = true` on the job. On Rails 7.2 use `:always`. Rails 7.1 doesn't have the setting, and `perform_all_later` only waits for the commit from Rails 8.1.2.
 
-Existing installations need a new table for coalescing. See [UPGRADING.md](UPGRADING.md).
+Existing installations need two new tables for coalescing. See [UPGRADING.md](UPGRADING.md).
+
+### Collecting calls
+
+With `on_conflict: :collect`, no call is discarded. Every call is stored on the pending job, which runs `perform_calls` with all of them instead of `perform`:
+
+```ruby
+class ReindexProductsJob < ApplicationJob
+  coalesce key: ->(account_id, _product_id) { account_id }, on_conflict: :collect, max_calls: 500
+
+  def perform_calls(calls)
+    account_id = calls.first.arguments.first
+    product_ids = calls.map { |call| call.arguments.last }.uniq
+
+    SearchIndex.bulk_index(Product.where(account_id: account_id, id: product_ids))
+  end
+end
+```
+
+Each call is an `ActiveJob::Coalescing::Call` with `id`, `arguments` and `job_data`, which is the call's serialized payload as it was enqueued. Calls come oldest first, and perform callbacks can read them as `coalesced_calls`. The call that creates the job gets `:created` as its `coalesce_status`, and the others get `:collected`. `perform_now` and other adapters run `perform_calls` with one call, whose `id` is `nil`. `perform_all_later` stores up to a full job's calls in each transaction.
+
+A job takes up to `max_calls` calls, 100 by default. The call that fills it seals it, so the next call opens a new job, and the sealed job still waits for its scheduled time. Each job takes its schedule, queue, priority and concurrency key from its first call, and later calls don't move it, so give any call that might come first the `wait` you want. A key's jobs are separate and can overlap. If they shouldn't, add `limits_concurrency` with `on_conflict: :block`. Combining it with `on_conflict: :discard` raises `ArgumentError`, because a conflict would destroy the job and its calls. A recurring task can't use a collecting job either.
+
+A retry runs every call again, so `perform_calls` has to be idempotent. If a call's record has been deleted, that call is skipped for this attempt with a `drop_coalesced_call.solid_queue` event, and the others run. If every call is skipped, the job finishes without running `perform_calls`. Any other deserialization error fails the job, which keeps all of its calls.
+
+A job created collecting runs that way whatever its class says later. If the class stops collecting while calls wait, the job fails with `ActiveJob::Coalescing::CollectedJobMismatch` and keeps its calls, so you can restore the declaration and retry it, or discard it. To change the declaration without failures, stop enqueuing and wait for `SolidQueue::CoalescedCall.waiting` to be empty before you deploy.
 
 ## Failed jobs and retries
 

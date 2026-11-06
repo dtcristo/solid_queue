@@ -1,12 +1,12 @@
 # Upgrading to version 1.8.x
-This version adds [coalescing](README.md#coalescing), which needs a new table, `solid_queue_coalesce_keys`. Fresh installs get it with the base schema. Existing installations need to copy the migration that adds it and run it:
+This version adds [coalescing](README.md#coalescing), which needs two new tables, `solid_queue_coalesce_keys` and `solid_queue_coalesced_calls`. Fresh installs get them with the base schema. Existing installations need to copy the migration that adds them and run it:
 
 ```bash
 bin/rails solid_queue:update
 bin/rails db:migrate
 ```
 
-Until you run it, everything works as before, and enqueuing a job that uses `coalesce` raises `SolidQueue::CoalesceKey::PendingMigrations`. The migration only creates the new table, so it doesn't lock the jobs table.
+Until you run it, everything works as before, and enqueuing a job that uses `coalesce` raises `SolidQueue::CoalesceKey::PendingMigrations`. The migration only creates the new tables, so it doesn't lock the jobs table.
 
 # Upgrading to version 1.7.2
 Jobs with [concurrency controls](README.md#concurrency-controls) now remember which semaphore they got their slot from, in their serialized job data, and give the slot back only to that semaphore. Before, a job that ran past its `duration` gave its slot back to the semaphore a later job had created after the job's own one expired, so one more job than the limit allowed could run at the same time, and keep doing so until the jobs waiting for that key ran out.
