@@ -28,6 +28,7 @@ Solid Queue can be used with SQL databases such as MySQL, PostgreSQL, or SQLite,
 - [Errors when enqueuing](#errors-when-enqueuing)
 - [Concurrency controls](#concurrency-controls)
   - [Performance considerations](#performance-considerations)
+- [Coalescing](#coalescing)
 - [Failed jobs and retries](#failed-jobs-and-retries)
   - [Error reporting on jobs](#error-reporting-on-jobs)
   - [Jobs interrupted by non-graceful process death](#jobs-interrupted-by-non-graceful-process-death)
@@ -646,6 +647,42 @@ Or something similar to that depending on your setup. You can also assign a diff
 In addition, mixing concurrency controls with **bulk enqueuing** (Active Job's `perform_all_later`) has no benefit because concurrency-controlled jobs need to be enqueued one by one to ensure concurrency limits are respected, so you lose all the benefits of bulk enqueuing.
 
 When jobs that have concurrency controls and `on_conflict: :discard` are enqueued in bulk, the ones that fail to be enqueued and are discarded would have `successfully_enqueued` set to `false`. The total count of jobs enqueued returned by `perform_all_later` will exclude these jobs as expected.
+
+## Coalescing
+
+`coalesce` makes `perform_later` calls with the same key share one pending job. The first call creates the job, and later calls are discarded until it starts. Once it starts the key is free again, so a call made during a run queues the next one.
+
+```ruby
+class ReindexProductJob < ApplicationJob
+  coalesce key: ->(product_id) { product_id }
+
+  def perform(product_id)
+    Product.find(product_id).reindex!
+  end
+end
+```
+
+The job runs with the first call's arguments, schedule, queue and priority, so pass IDs and load fresh data in `perform`.
+
+`coalesce_status` on the enqueued job is `:created` or `:discarded`, and `provider_job_id` is the pending job's ID either way. It's `nil` when the call wasn't admitted, for example on another adapter or on a worker's instance, and more values may be added later. Don't rely on `successfully_enqueued?`, which Active Job sets to `true` even for a discarded call. Each admitted call also emits a `coalesce.solid_queue` event with `status`, `key`, `job_id`, `active_job_id` and `class_name`.
+
+`key` works like the key of [`limits_concurrency`](#concurrency-controls). It's a literal or a proc that receives the job's arguments, and an Active Record object becomes its class name and `id`. Keys are scoped to the job class, and to the batch when the job is in a [batch](#batch-jobs). `key: nil` or `key: false` turns coalescing off. Keys use the database's default collation, so on MySQL they're usually case-insensitive.
+
+`coalesce` limits how many jobs wait, and `limits_concurrency` limits how many run. Use both for one pending job per key and no overlapping runs. For deduplication, prefer `coalesce` to `on_conflict: :discard`, which can also drop retries and calls made during a run.
+
+Retries never coalesce. If a retry can't be enqueued, the run fails instead of finishing, so the work of the discarded calls isn't lost.
+
+`ActiveJob.perform_all_later` coalesces too. It stores ordinary jobs first, then each key in its own transaction, and counts discarded calls as not enqueued. If it raises partway, earlier keys stay committed, so enqueue `jobs.reject(&:provider_job_id)` again to recover. For all-or-nothing, wrap it in a queue database transaction:
+
+```ruby
+SolidQueue::Record.transaction do
+  ActiveJob.perform_all_later(jobs)
+end
+```
+
+If Solid Queue has its own database, a call inside your app's transaction can be discarded into a job that a worker starts before you commit, and that job misses your change. To avoid this, set `self.enqueue_after_transaction_commit = true` on the job. On Rails 7.2 use `:always`. Rails 7.1 doesn't have the setting, and `perform_all_later` only waits for the commit from Rails 8.1.2.
+
+Existing installations need a new table for coalescing. See [UPGRADING.md](UPGRADING.md).
 
 ## Failed jobs and retries
 
