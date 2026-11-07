@@ -57,6 +57,10 @@ class SolidQueue::LogSubscriber < ActiveSupport::LogSubscriber
     debug formatted_event(event, action: "Coalesce call", **event.payload.slice(:job_id, :active_job_id, :class_name), outcome: event.payload[:status])
   end
 
+  def drop_coalesced_call(event)
+    warn formatted_event(event, action: "Skip coalesced call for a deleted record", **event.payload.slice(:call_id, :job_id, :active_job_id, :class_name, :exception_class))
+  end
+
   def batch_progress_error(event)
     error formatted_event(event, action: "Error updating batch progress", **event.payload.slice(:batch_id, :job_id), error: formatted_error(event.payload[:error]))
   end

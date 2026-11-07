@@ -22,6 +22,7 @@ class WorkerTest < ActiveSupport::TestCase
 
   teardown do
     @worker.stop
+    kill_running_jobs_in(@worker)
     JobBuffer.clear
   end
 

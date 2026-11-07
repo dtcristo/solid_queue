@@ -32,6 +32,16 @@ class SolidQueue::CoalesceWithoutBatchesTest < ActiveSupport::TestCase
     assert_equal [ "a", "b" ], JobBuffer.values.sort
   end
 
+  test "collecting jobs enqueue and run without it" do
+    2.times { |i| CollectedCallsJob.perform_later("g", i) }
+
+    assert_equal 1, SolidQueue::Job.count
+
+    perform_ready_jobs
+
+    assert_equal [ [ [ "g", 0 ], [ "g", 1 ] ] ], JobBuffer.values
+  end
+
   private
     def migrate(direction)
       ActiveRecord::Migration.suppress_messages do

@@ -158,11 +158,19 @@ ActiveRecord::Schema[7.1].define(version: 1) do
     t.index [ "key" ], name: "index_solid_queue_coalesce_keys_on_key", unique: true
   end
 
+  create_table "solid_queue_coalesced_calls", force: :cascade do |t|
+    t.bigint "job_id", null: false
+    t.text "arguments", null: false
+    t.datetime "created_at", null: false
+    t.index [ "job_id" ], name: "index_solid_queue_coalesced_calls_on_job_id"
+  end
+
   add_foreign_key "solid_queue_batch_executions", "solid_queue_batches", column: "batch_id", on_delete: :cascade
   add_foreign_key "solid_queue_batch_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_blocked_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_claimed_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_coalesce_keys", "solid_queue_jobs", column: "job_id", on_delete: :cascade
+  add_foreign_key "solid_queue_coalesced_calls", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_failed_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_ready_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_recurring_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade

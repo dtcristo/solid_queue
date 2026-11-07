@@ -18,6 +18,12 @@ class SolidQueue::CoalesceEnqueueErrorsTest < ActiveSupport::TestCase
     def perform(*); end
   end
 
+  class CollectJob < DiscardJob
+    coalesce key: ->(key) { key }, on_conflict: :collect
+
+    def perform_calls(_calls); end
+  end
+
   class DatabaseKeyJob < DiscardJob
     coalesce key: ->(*) { raise ActiveRecord::StatementInvalid, "key lookup failed" }
   end
@@ -28,7 +34,13 @@ class SolidQueue::CoalesceEnqueueErrorsTest < ActiveSupport::TestCase
     end
   end
 
-  [ DatabaseKeyJob, DatabasePayloadJob ].each do |job_class|
+  class DatabaseCollectPayloadJob < CollectJob
+    def serialize
+      raise ActiveRecord::StatementInvalid, "payload lookup failed"
+    end
+  end
+
+  [ DatabaseKeyJob, DatabasePayloadJob, DatabaseCollectPayloadJob ].each do |job_class|
     test "#{job_class.name.demodulize} preparation wraps only single enqueue errors" do
       single = assert_raises(SolidQueue::Job::EnqueueError) { job_class.perform_later("a") }
       assert_instance_of ActiveRecord::StatementInvalid, single.cause
@@ -37,7 +49,7 @@ class SolidQueue::CoalesceEnqueueErrorsTest < ActiveSupport::TestCase
     end
   end
 
-  [ DiscardJob ].each do |job_class|
+  [ DiscardJob, CollectJob ].each do |job_class|
     test "#{job_class.name.demodulize} bulk enqueue propagates a database error unchanged" do
       error = ActiveRecord::StatementInvalid.new("database failure")
 
@@ -100,6 +112,7 @@ class SolidQueue::CoalesceEnqueueErrorsTest < ActiveSupport::TestCase
           expected_jobs = bulk && !outer_transaction ? [ before.job_id ] : []
           assert_equal expected_jobs, SolidQueue::Job.pluck(:active_job_id)
           assert_empty SolidQueue::CoalesceKey.all
+          assert_empty SolidQueue::CoalescedCall.all
         end
       end
     end

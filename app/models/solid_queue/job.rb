@@ -52,7 +52,7 @@ module SolidQueue
         active_job.scheduled_at = scheduled_at
         return enqueue_coalesced(active_job) if active_job.coalesced_enqueue?
 
-        create_from_active_job(active_job).tap do |enqueued_job|
+        continuing_coalesced_run(active_job) { create_from_active_job(active_job) }.tap do |enqueued_job|
           active_job.provider_job_id = enqueued_job.id if enqueued_job.persisted?
           active_job.successfully_enqueued = enqueued_job.persisted?
           ensure_coalesced_retry_enqueued(active_job, enqueued_job)
@@ -78,14 +78,14 @@ module SolidQueue
           where(active_job_id: active_jobs.map(&:job_id)).order(id: :asc)
         end
 
-        def attributes_from_active_job(active_job)
+        def attributes_from_active_job(active_job, arguments: active_job.serialize)
           {
             queue_name: active_job.queue_name || DEFAULT_QUEUE_NAME,
             active_job_id: active_job.job_id,
             priority: active_job.priority || DEFAULT_PRIORITY,
             scheduled_at: active_job.scheduled_at,
             class_name: active_job.class.name,
-            arguments: active_job.serialize,
+            arguments: arguments,
             concurrency_key: active_job.concurrency_key
           }.tap do |attributes|
             attributes[:batch_id] = active_job.batch_id if Batch.migrated?

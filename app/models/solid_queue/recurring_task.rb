@@ -9,6 +9,7 @@ module SolidQueue
     validate :ensure_schedule_supported
     validate :ensure_command_or_class_present
     validate :ensure_existing_job_class
+    validate :ensure_job_class_not_collecting
 
     scope :static, -> { where(static: true) }
     scope :dynamic, -> { where(static: false) }
@@ -138,6 +139,14 @@ module SolidQueue
       def ensure_existing_job_class
         if class_name.present? && job_class.nil?
           errors.add :class_name, :undefined, message: "doesn't correspond to an existing class"
+        end
+      end
+
+      # A tick that joins an open job would record that job again, and the unique
+      # index on recurring_executions.job_id would roll back the call it collected.
+      def ensure_job_class_not_collecting
+        if class_name.present? && job_class&.try(:coalesce_collect?)
+          errors.add :class_name, :collecting, message: "can't be a job that uses `coalesce` with `on_conflict: :collect`"
         end
       end
 

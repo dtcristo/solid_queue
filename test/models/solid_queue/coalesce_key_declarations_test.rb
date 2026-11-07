@@ -17,6 +17,14 @@ class SolidQueue::CoalesceKeyDeclarationsTest < ActiveSupport::TestCase
     coalesce key: "default"
   end
 
+  class CollectJob < ApplicationJob
+    coalesce key: "default", on_conflict: :collect
+
+    def perform_calls(calls)
+      calls.each { |call| JobBuffer.add(call.arguments.first) }
+    end
+  end
+
   teardown do
     SolidQueue::Job.destroy_all
     SolidQueue::Batch.destroy_all
@@ -43,6 +51,27 @@ class SolidQueue::CoalesceKeyDeclarationsTest < ActiveSupport::TestCase
         assert_equal (key.nil? || key == false) ? [ 0, 1 ] : [ 0 ], JobBuffer.values
       ensure
         DiscardJob.coalesce_key = previous_key
+      end
+
+      test "#{label} declaration with collecting through #{bulk ? 'bulk' : 'single'} enqueue" do
+        previous_key = CollectJob.coalesce_key
+        CollectJob.coalesce key: key, on_conflict: :collect
+        jobs = [ CollectJob.new(0), CollectJob.new(1) ]
+
+        bulk ? ActiveJob.perform_all_later(jobs) : jobs.each(&:enqueue)
+
+        if key.nil? || key == false
+          assert_equal [ nil, nil ], jobs.map(&:coalesce_status)
+          assert_equal 2, jobs.map(&:provider_job_id).uniq.size
+        else
+          assert_equal [ :created, :collected ], jobs.map(&:coalesce_status)
+          assert_equal jobs.first.provider_job_id, jobs.last.provider_job_id
+        end
+
+        perform_ready_jobs
+        assert_equal [ 0, 1 ], JobBuffer.values
+      ensure
+        CollectJob.coalesce_key = previous_key
       end
     end
   end

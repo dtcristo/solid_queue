@@ -101,8 +101,10 @@ module SolidQueue
           arguments[CONCURRENCY_LOCK_KEY]
         end
 
+        # A job created collecting blocks whatever its class says now, because
+        # discarding it would destroy its calls
         def handle_concurrency_conflict
-          if concurrency_on_conflict.discard?
+          if concurrency_on_conflict.discard? && !created_collecting?
             destroy
           else
             block
